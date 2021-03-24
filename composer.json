@@ -1,0 +1,54 @@
+{
+    "name": "zainzulifqargit/mail-tracker",
+    "type": "library",
+    "description": "Logs and tracks all outgoing emails from Laravel",
+    "keywords": [
+        "zainzulifqar",
+        "MailTracker"
+    ],
+    "homepage": "https://github.com/zainzulifqargit/mail-tracker",
+    "license": "MIT",
+    "authors": [{
+        "name": "Zain Zulifqar",
+        "email": "zainzulifqar21@gmail.com",
+        "homepage": "https://github.com/zainzulifqargit/mail-tracker",
+        "role": "Developer"
+    }],
+    "require": {
+        "php": ">=7.1",
+        "laravel/framework": ">=5.7 <7.0",
+        "guzzlehttp/guzzle": "^5.3.1|^6.2.1",
+        "aws/aws-php-sns-message-validator": "^1.1"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "~6.0|~7.0|~8.0",
+        "orchestra/testbench": "~3.0|~4.0",
+        "mockery/mockery": "^1.1"
+    },
+    "suggest": {
+        "fedeisas/laravel-mail-css-inliner": "Automatically inlines CSS into all outgoing mail."
+    },
+    "autoload": {
+        "psr-4": {
+            "jdavidbakr\\MailTracker\\": "src"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "jdavidbakr\\MailTracker\\Tests\\": "tests"
+        }
+    },
+    "scripts": {
+        "test": "phpunit"
+    },
+    "extra": {
+        "branch-alias": {
+            "dev-master": "1.0-dev"
+        },
+        "laravel": {
+            "providers": [
+                "jdavidbakr\\MailTracker\\MailTrackerServiceProvider"
+            ]
+        }
+    }
+}
