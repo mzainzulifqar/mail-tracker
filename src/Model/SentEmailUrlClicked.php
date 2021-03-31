@@ -11,6 +11,7 @@ class SentEmailUrlClicked extends Model
     protected $table = 'sent_emails_url_clicked';
 
     protected $fillable = [
+        'domain',
         'sent_email_id',
         'url',
         'hash',
