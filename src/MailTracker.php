@@ -64,7 +64,7 @@ class MailTracker implements \Swift_Events_SendListener
     protected function injectTrackingPixel($html, $hash)
     {
         // Append the tracking url
-        $tracking_pixel = '<img border=0 width=1 alt="" height=1 src="'.siteRoute('mailTracker_t', ['hash' => $hash]).'" />';
+        $tracking_pixel = '<img border=0 width=1 alt="" height=1 src="'.outboundLink(strtolower(config('app.name')),'/email-manager/t/'.$hash).'" />';
 
         $linebreak = Str::random(32);
         $html = str_replace("\n", $linebreak, $html);
@@ -100,13 +100,7 @@ class MailTracker implements \Swift_Events_SendListener
             $url = str_replace('&amp;', '&', $matches[2]);
         }
 
-        return $matches[1].siteRoute(
-            'mailTracker_n',
-            [
-                'l' => $url,
-                'h' => $this->hash
-            ]
-        );
+        return $matches[1].outboundLink(strtolower(config('app.name')),'/email-manager/n?l='.$url.'&h='.$this->hash);
     }
 
     /**
@@ -161,7 +155,7 @@ class MailTracker implements \Swift_Events_SendListener
                 }
 
                 $tracker = SentEmail::create([
-                    'domain' => cache('mail-domain'),
+                    'domain' => strtolower(config('app.name')),
                     'hash' => $hash,
                     'headers' => $headers->toString(),
                     'sender' => $from_name." <".$from_email.">",
