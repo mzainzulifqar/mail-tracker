@@ -15,7 +15,7 @@ class AdminController extends Controller
     public function postSearch(Request $request)
     {
         session(['mail-tracker-index-search' => $request->search]);
-        return redirect(route('mailTracker_Index'));
+        return redirect(siteRoute('mailTracker_Index'));
     }
 
     /**
@@ -24,7 +24,7 @@ class AdminController extends Controller
     public function clearSearch()
     {
         session(['mail-tracker-index-search' => null]);
-        return redirect(route('mailTracker_Index'));
+        return redirect(siteRoute('mailTracker_Index'));
     }
 
     /**
