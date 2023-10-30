@@ -49,6 +49,10 @@ class MailTrackerController extends Controller
 
     protected function linkClicked($url, $hash)
     {
+        if ($url == '' || $hash == '') {
+            return;
+        }
+        
         $tracker = Model\SentEmail::where('hash', $hash)
             ->first();
         if ($tracker) {
