@@ -31,8 +31,12 @@ class MailTrackerController extends Controller
         return $response;
     }
 
-    public function getL($url, $hash)
-    {
+    public function getL(Request $request,$url, $hash)
+    {   
+        if (!$this->agentChecker($request)) {
+            return;
+        }
+
         $url = base64_decode(str_replace('$', '/', $url));
         if (filter_var($url, FILTER_VALIDATE_URL) === false) {
             throw new BadUrlLink('Mail hash: ' . $hash);
@@ -42,6 +46,10 @@ class MailTrackerController extends Controller
 
     public function getN(Request $request)
     {
+        if (!$this->agentChecker($request)) {
+            return;
+        }
+
         $url = $request->l;
         $hash = $request->h;
         return $this->linkClicked($url, $hash);
@@ -55,11 +63,53 @@ class MailTrackerController extends Controller
         
         $tracker = Model\SentEmail::where('hash', $hash)
             ->first();
+   
         if ($tracker) {
             RecordLinkClickJob::dispatch($tracker, $url);
             return redirect($url);
         }
 
         throw new BadUrlLink('Mail hash: ' . $hash);
+    }
+
+    protected function agentChecker($request) {
+        $knownBrowsers = [
+            // Chrome
+            '/\bChrome\/\d+\.\d+\b/',
+        
+            // Firefox
+            '/\bFirefox\/\d+\.\d+\b/',
+        
+            // Safari
+            '/\bSafari\/\d+\.\d+\b/',
+        
+            // Old Internet Explorer
+            '/\bMSIE \d+\.\d+\b/',
+        
+            // Newer Internet Explorer
+            '/\bTrident\/\d+\.\d+\b/',
+        
+            // Edge
+            '/\bEdg\/\d+\.\d+\b/',
+        
+            // Opera
+            '/\bOPR\/\d+\.\d+\b/'
+        ];
+        
+        $userAgent = $request->header('User-Agent');
+        $isValidAgent = false;
+        
+        foreach ($knownBrowsers as $pattern) {
+            if (preg_match($pattern, $userAgent)) {
+                $isValidAgent = true;
+                break;
+            }
+        }
+
+        if ($isValidAgent) {
+            return true;
+        } else {
+            return false;
+        }
     }
 }
