@@ -123,15 +123,17 @@ class MailTracker implements \Swift_Events_SendListener
      */
     protected function createTrackers($message)
     {
+        $headers = $message->getHeaders();
+        if ($headers->get('X-No-Track')) {
+            // Don't send with this header
+            $headers->remove('X-No-Track');
+            // Don't track this email - return early to skip all 
+            // tracking
+            return;
+        }
+        
         foreach ($message->getTo() as $to_email => $to_name) {
             foreach ($message->getFrom() as $from_email => $from_name) {
-                $headers = $message->getHeaders();
-                if ($headers->get('X-No-Track')) {
-                    // Don't send with this header
-                    $headers->remove('X-No-Track');
-                    // Don't track this email
-                    continue;
-                }
                 do {
                     $hash = Str::random(32);
                     $used = SentEmail::where('hash', $hash)->count();
@@ -152,6 +154,15 @@ class MailTracker implements \Swift_Events_SendListener
                     if (strpos($part->getContentType(), 'text/html') === 0) {
                         $part->setBody($this->addTrackers($message->getBody(), $hash));
                     }
+                }
+
+                // Check if the header exists
+                $campaignHeader = $headers->get('X-Model-ID');
+                if ($campaignHeader) {
+                    $campaignID = $campaignHeader->getFieldBody();
+                    $headers->remove('X-Model-ID');
+                } else {
+                    $campaignID = null; // or a default value or any other fallback action
                 }
 
                 $tracker = SentEmail::create([
