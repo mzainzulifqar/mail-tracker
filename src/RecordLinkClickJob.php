@@ -22,16 +22,18 @@ class RecordLinkClickJob implements ShouldQueue
 
     public $sentEmail;
     public $url;
+    public $domain;
 
     public function retryUntil()
     {
         return now()->addDays(5);
     }
 
-    public function __construct($sentEmail, $url)
+    public function __construct($sentEmail, $url, $domain = null)
     {
         $this->sentEmail = $sentEmail;
         $this->url = $url;
+        $this->domain = $domain;
     }
 
     public function handle()
@@ -39,11 +41,25 @@ class RecordLinkClickJob implements ShouldQueue
         $this->sentEmail->clicks++;
         $this->sentEmail->save();
         
-        $url_clicked = SentEmailUrlClicked::create([
+        // Find or create the URL clicked record and increment clicks
+        $url_clicked = SentEmailUrlClicked::where([
             'sent_email_id' => $this->sentEmail->id,
             'url' => $this->url,
-            'hash' => $this->sentEmail->hash,
-        ]);
+        ])->first();
+        
+        if ($url_clicked) {
+            $url_clicked->clicks++;
+            $url_clicked->save();
+        } else {
+            // Fallback: create new record if not found
+            $url_clicked = SentEmailUrlClicked::create([
+                'sent_email_id' => $this->sentEmail->id,
+                'url' => $this->url,
+                'hash' => $this->sentEmail->hash,
+                'domain' => $this->domain,
+                'clicks' => 1,
+            ]);
+        }
         
         Event::dispatch(new LinkClickedEvent($this->sentEmail));
     }

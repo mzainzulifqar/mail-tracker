@@ -2,10 +2,12 @@
 
 namespace jdavidbakr\MailTracker;
 
-use Mail;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\ServiceProvider;
+use Illuminate\Contracts\Foundation\Application;
+use Symfony\Component\Mailer\Mailer;
+use Symfony\Component\EventDispatcher\EventDispatcher;
 
 class MailTrackerServiceProvider extends ServiceProvider
 {
@@ -32,11 +34,11 @@ class MailTrackerServiceProvider extends ServiceProvider
         $this->loadMigrationsFrom(__DIR__.'/../database/migrations');
         $this->publishViews();
 
-        // Hook into the mailer
-        $this->registerSwiftPlugin();
+        // Hook into the mailer using Symfony Mailer events
+        $this->registerSymfonyMailerPlugin();
 
         // Install the routes
-        // $this->installRoutes();
+        $this->installRoutes();
     }
 
     /**
@@ -46,7 +48,8 @@ class MailTrackerServiceProvider extends ServiceProvider
      */
     public function register()
     {
-        //
+        // Merge config
+        $this->mergeConfigFrom(__DIR__.'/../config/mail-tracker.php', 'mail-tracker');
     }
 
     /**
@@ -79,14 +82,56 @@ class MailTrackerServiceProvider extends ServiceProvider
     }
 
     /**
-     * Register the Swift plugin
+     * Register the Symfony Mailer event subscriber
      *
      * @return void
      */
-    protected function registerSwiftPlugin()
+    protected function registerSymfonyMailerPlugin()
     {
-        $this->app['mailer']->getSwiftMailer()->registerPlugin(new MailTracker());
+        $this->app->resolving('mail.manager', function ($mailManager) {
+            // Get the default mailer
+            $mailer = $mailManager->mailer();
+            
+            // Get the Symfony mailer instance
+            $symfonyMailer = $mailer->getSymfonyTransport();
+            
+            // If it has an event dispatcher, add our subscriber
+            if (method_exists($symfonyMailer, 'getDispatcher')) {
+                $dispatcher = $symfonyMailer->getDispatcher();
+                if ($dispatcher) {
+                    $dispatcher->addSubscriber(new MailTracker());
+                }
+            }
+        });
+
+        // Alternative approach for Laravel's mail events
+        $this->app['events']->listen(\Illuminate\Mail\Events\MessageSending::class, function ($event) {
+            try {
+                // Create a MailTracker instance and handle the message
+                $tracker = new MailTracker();
+                
+                // Get the Symfony message from the Laravel event
+                if (isset($event->message)) {
+                    $message = $event->message;
+                } else {
+                    \Log::warning('MailTracker: Could not get message from event');
+                    return;
+                }
+                
+                // Handle the tracking for this message
+                if ($message instanceof \Symfony\Component\Mime\Email) {
+                    $tracker->createTrackers($message);
+                    $tracker->purgeOldRecords();
+                } else {
+                    \Log::warning('MailTracker: Message is not a Symfony Email instance, got: ' . get_class($message));
+                }
+            } catch (\Exception $e) {
+                // Log error but don't break email sending
+                \Log::error('MailTracker error in MessageSending: ' . $e->getMessage());
+            }
+        });
     }
+
 
     /**
      * Install the needed routes
@@ -99,6 +144,7 @@ class MailTrackerServiceProvider extends ServiceProvider
         $config['namespace'] = 'jdavidbakr\MailTracker';
 
         if (!$this->isLumen()) {
+            // Register routes for all domains
             Route::group($config, function () {
                 Route::get('t/{hash}', 'MailTrackerController@getT')->name('mailTracker_t');
                 Route::get('l/{url}/{hash}', 'MailTrackerController@getL')->name('mailTracker_l');
@@ -108,11 +154,13 @@ class MailTrackerServiceProvider extends ServiceProvider
         } else {
             $app = $this->app;
             $app->group($config, function () use ($app) {
-                $app->get('t', 'MailTrackerController@getT')->name('mailTracker_t');
-                $app->get('l', 'MailTrackerController@getL')->name('mailTracker_l');
-                $app->post('sns', 'SNSController@callback')->name('mailTracker_SNS');
+                $app->get('t/{hash}', 'MailTrackerController@getT');
+                $app->get('l/{url}/{hash}', 'MailTrackerController@getL');
+                $app->get('n', 'MailTrackerController@getN');
+                $app->post('sns', 'SNSController@callback');
             });
         }
+        
         // Install the Admin routes
         $config_admin = $this->app['config']->get('mail-tracker.admin-route', []);
         $config_admin['namespace'] = 'jdavidbakr\MailTracker';
@@ -130,12 +178,12 @@ class MailTrackerServiceProvider extends ServiceProvider
             } else {
                 $app = $this->app;
                 $app->group($config_admin, function () use ($app) {
-                    $app->get('/', 'AdminController@getIndex')->name('mailTracker_Index');
-                    $app->post('search', 'AdminController@postSearch')->name('mailTracker_Search');
-                    $app->get('clear-search', 'AdminController@clearSearch')->name('mailTracker_ClearSearch');
-                    $app->get('show-email/{id}', 'AdminController@getShowEmail')->name('mailTracker_ShowEmail');
-                    $app->get('url-detail/{id}', 'AdminController@getUrlDetail')->name('mailTracker_UrlDetail');
-                    $app->get('smtp-detail/{id}', 'AdminController@getSmtpDetail')->name('mailTracker_SmtpDetail');
+                    $app->get('/', 'AdminController@getIndex');
+                    $app->post('search', 'AdminController@postSearch');
+                    $app->get('clear-search', 'AdminController@clearSearch');
+                    $app->get('show-email/{id}', 'AdminController@getShowEmail');
+                    $app->get('url-detail/{id}', 'AdminController@getUrlDetail');
+                    $app->get('smtp-detail/{id}', 'AdminController@getSmtpDetail');
                 });
             }
         }

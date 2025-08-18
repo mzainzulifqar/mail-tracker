@@ -2,202 +2,280 @@
 
 namespace jdavidbakr\MailTracker;
 
-use Event;
 use Illuminate\Support\Str;
+use Illuminate\Support\Facades\Event;
 use jdavidbakr\MailTracker\Model\SentEmail;
 use jdavidbakr\MailTracker\Events\EmailSentEvent;
 use jdavidbakr\MailTracker\Model\SentEmailUrlClicked;
+use Symfony\Component\Mailer\Event\MessageEvent;
+use Symfony\Component\EventDispatcher\EventSubscriberInterface;
+use Symfony\Component\Mime\Email;
 
-class MailTracker implements \Swift_Events_SendListener
+class MailTracker implements EventSubscriberInterface
 {
     protected $hash;
 
-    /**
-     * Inject the tracking code into the message
-     */
-    public function beforeSendPerformed(\Swift_Events_SendEvent $event)
+    public static function getSubscribedEvents(): array
     {
-        $message = $event->getMessage();
+        return [
+            MessageEvent::class => 'onMessage',
+        ];
+    }
+
+    /**
+     * Handle the Symfony Mailer message event
+     */
+    public function onMessage(MessageEvent $event): void
+    {
+        $email = $event->getMessage();
+        
+        if (!$email instanceof Email) {
+            return;
+        }
 
         // Create the trackers
-        $this->createTrackers($message);
+        $this->createTrackers($email);
 
         // Purge old records
         $this->purgeOldRecords();
     }
 
-    public function sendPerformed(\Swift_Events_SendEvent $event)
+    /**
+     * Create the tracking elements for the email
+     */
+    public function createTrackers($email)
     {
-        // If this was sent through SES, retrieve the data
-        if (config('mail.driver') == 'ses') {
-            $message = $event->getMessage();
-            $this->updateSesMessageId($message);
+        foreach ($email->getTo() as $to) {
+            $this->hash = Str::random(32);
+            $sent_email = $this->createSentEmail($email, $to->getAddress());
+
+            // Add tracking pixel and update links
+            if ($email->getHtmlBody()) {
+                $this->injectTrackingPixel($email, $sent_email);
+                $this->updateTrackingLinks($email, $sent_email);
+                
+                // Update the content in database with the modified version
+                if (config('mail-tracker.log-content', true)) {
+                    $sent_email->content = $email->getHtmlBody() ?? $email->getTextBody() ?? '';
+                    $sent_email->save();
+                }
+            }
+
+            // Add custom header for tracking
+            $email->getHeaders()->addTextHeader('X-Mailer-Hash', $this->hash);
+
+            // Fire the event
+            Event::dispatch(new EmailSentEvent($sent_email));
         }
-    }
-
-    protected function updateSesMessageId($message)
-    {
-        // Get the SentEmail object
-        $headers = $message->getHeaders();
-        $hash = optional($headers->get('X-Mailer-Hash'))->getFieldBody();
-        $sent_email = SentEmail::where('hash', $hash)->first();
-
-        // Get info about the message-id from SES
-        if ($sent_email) {
-            $sent_email->message_id = $headers->get('X-SES-Message-ID')->getFieldBody();
-            $sent_email->save();
-        }
-    }
-
-    protected function addTrackers($html, $hash)
-    {
-        if (config('mail-tracker.inject-pixel')) {
-            $html = $this->injectTrackingPixel($html, $hash);
-        }
-        if (config('mail-tracker.track-links')) {
-            $html = $this->injectLinkTracker($html, $hash);
-        }
-
-        return $html;
-    }
-
-    protected function injectTrackingPixel($html, $hash)
-    {
-        // Append the tracking url
-        $tracking_pixel = '<img border=0 width=1 alt="" height=1 src="'.outboundLink(strtolower(config('app.name')),'/email-manager/t/'.$hash).'" />';
-
-        $linebreak = Str::random(32);
-        $html = str_replace("\n", $linebreak, $html);
-
-        if (preg_match("/^(.*<body[^>]*>)(.*)$/", $html, $matches)) {
-            $html = $matches[1].$matches[2].$tracking_pixel;
-        } else {
-            $html = $html . $tracking_pixel;
-        }
-        $html = str_replace($linebreak, "\n", $html);
-
-        return $html;
-    }
-
-    protected function injectLinkTracker($html, $hash)
-    {
-        $this->hash = $hash;
-
-        $html = preg_replace_callback(
-            "/(<a[^>]*href=['\"])([^'\"]*)/",
-            [$this, 'inject_link_callback'],
-            $html
-        );
-
-        return $html;
-    }
-
-    protected function inject_link_callback($matches)
-    {
-        if (empty($matches[2])) {
-            $url = app()->make('url')->to('/');
-        } else {
-            $url = str_replace('&amp;', '&', $matches[2]);
-        }
-
-        return $matches[1].outboundLink(strtolower(config('app.name')),'/email-manager/n?l='.$url.'&h='.$this->hash);
     }
 
     /**
-     * Legacy function
-     *
-     * @param [type] $url
-     * @return boolean
+     * Create a SentEmail record
      */
-    public static function hash_url($url)
+    protected function createSentEmail($email, $recipient_email)
     {
-        // Replace "/" with "$"
-        return str_replace("/", "$", base64_encode($url));
-    }
-
-    /**
-     * Create the trackers
-     *
-     * @param  Swift_Mime_Message $message
-     * @return void
-     */
-    protected function createTrackers($message)
-    {
-        $headers = $message->getHeaders();
-        if ($headers->get('X-No-Track')) {
-            // Don't send with this header
-            $headers->remove('X-No-Track');
-            // Don't track this email - return early to skip all 
-            // tracking
-            return;
-        }
+        $sent_email = new SentEmail();
+        $sent_email->hash = $this->hash;
+        $sent_email->headers = json_encode($this->getHeaders($email));
+        $sent_email->sender = $this->getSenderEmail($email);
+        $sent_email->recipient = $recipient_email;
+        $sent_email->subject = $email->getSubject() ?? '';
+        $sent_email->domain = $this->getCurrentDomain();
         
-        foreach ($message->getTo() as $to_email => $to_name) {
-            foreach ($message->getFrom() as $from_email => $from_name) {
-                do {
-                    $hash = Str::random(32);
-                    $used = SentEmail::where('hash', $hash)->count();
-                } while ($used > 0);
-                $headers->addTextHeader('X-Mailer-Hash', $hash);
-                $subject = $message->getSubject();
-
-                $original_content = $message->getBody();
-
-                if ($message->getContentType() === 'text/html' ||
-                    ($message->getContentType() === 'multipart/alternative' && $message->getBody()) ||
-                    ($message->getContentType() === 'multipart/mixed' && $message->getBody())
-                ) {
-                    $message->setBody($this->addTrackers($message->getBody(), $hash));
+        // Capture email content - try multiple methods
+        $htmlBody = $email->getHtmlBody();
+        $textBody = $email->getTextBody();
+        
+        // Debug logging
+        \Log::info('MailTracker Content Debug', [
+            'has_html_body' => !empty($htmlBody),
+            'has_text_body' => !empty($textBody),
+            'html_length' => strlen($htmlBody ?? ''),
+            'text_length' => strlen($textBody ?? ''),
+            'subject' => $email->getSubject()
+        ]);
+        
+        $content = '';
+        if ($htmlBody) {
+            $content = $htmlBody;
+        } elseif ($textBody) {
+            $content = $textBody;
+        } else {
+            // Try to get content from email body
+            $body = $email->getBody();
+            if ($body) {
+                if (method_exists($body, 'getBody')) {
+                    $content = $body->getBody();
+                } elseif (method_exists($body, '__toString')) {
+                    $content = (string) $body;
                 }
-
-                foreach ($message->getChildren() as $part) {
-                    if (strpos($part->getContentType(), 'text/html') === 0) {
-                        $part->setBody($this->addTrackers($message->getBody(), $hash));
-                    }
-                }
-
-                // Check if the header exists
-                $campaignHeader = $headers->get('X-Model-ID');
-                if ($campaignHeader) {
-                    $campaignID = $campaignHeader->getFieldBody();
-                    $headers->remove('X-Model-ID');
-                } else {
-                    $campaignID = null; // or a default value or any other fallback action
-                }
-
-                $tracker = SentEmail::create([
-                    'domain' => strtolower(config('app.name')),
-                    'hash' => $hash,
-                    'headers' => $headers->toString(),
-                    'sender' => $from_name." <".$from_email.">",
-                    'recipient' => $to_name.' <'.$to_email.'>',
-                    'subject' => $subject,
-                    'content' => config('mail-tracker.log-content', true) ? (strlen($original_content) > 65535 ? substr($original_content, 0, 65532) . "..." : $original_content) : null,
-                    'opens' => 0,
-                    'clicks' => 0,
-                    'message_id' => $message->getId(),
-                    'meta' => [],
-                ]);
-
-                Event::dispatch(new EmailSentEvent($tracker));
             }
         }
+        
+        $sent_email->content = $content;
+        $sent_email->opens = 0;
+        $sent_email->clicks = 0;
+        $sent_email->message_id = null; // Will be set later if available
+        $sent_email->meta = json_encode([]);
+        $sent_email->save();
+
+        return $sent_email;
     }
 
     /**
-     * Purge old records in the database
-     *
-     * @return void
+     * Get headers from email
      */
-    protected function purgeOldRecords()
+    protected function getHeaders($email)
+    {
+        $headers = [];
+        foreach ($email->getHeaders()->all() as $name => $header) {
+            if (is_array($header)) {
+                $headers[$name] = array_map(function($h) {
+                    return $h->getBodyAsString();
+                }, $header);
+            } else {
+                $headers[$name] = $header->getBodyAsString();
+            }
+        }
+        return $headers;
+    }
+
+    /**
+     * Get sender name from email
+     */
+    protected function getSenderName($email)
+    {
+        $from = $email->getFrom();
+        if (empty($from)) {
+            return '';
+        }
+        $fromAddress = reset($from);
+        return $fromAddress->getName() ?? '';
+    }
+
+    /**
+     * Get sender email from email
+     */
+    protected function getSenderEmail($email)
+    {
+        $from = $email->getFrom();
+        if (empty($from)) {
+            return '';
+        }
+        $fromAddress = reset($from);
+        return $fromAddress->getAddress();
+    }
+
+    /**
+     * Inject tracking pixel into email
+     */
+    protected function injectTrackingPixel($email, $sent_email)
+    {
+        $tracking_pixel = '<img src="'.route('mailTracker_t', [$sent_email->hash]).'" width="1" height="1" border="0" style="border:0;width:1px;height:1px;" />';
+        
+        $body = $email->getHtmlBody();
+        if ($body) {
+            // Try to inject before closing body tag
+            if (stripos($body, '</body>') !== false) {
+                $body = str_ireplace('</body>', $tracking_pixel.'</body>', $body);
+            } else {
+                $body .= $tracking_pixel;
+            }
+            $email->html($body);
+        }
+    }
+
+    /**
+     * Update links in email for tracking
+     */
+    protected function updateTrackingLinks($email, $sent_email)
+    {
+        $body = $email->getHtmlBody();
+        if (!$body) {
+            return;
+        }
+
+        $dom = new \DOMDocument();
+        $dom->loadHTML($body, LIBXML_HTML_NOIMPLIED | LIBXML_HTML_NODEFDTD);
+
+        $links = $dom->getElementsByTagName('a');
+        $modified = false;
+
+        for ($i = $links->length - 1; $i >= 0; $i--) {
+            $link = $links->item($i);
+            $href = $link->getAttribute('href');
+
+            if ($href && filter_var($href, FILTER_VALIDATE_URL)) {
+                $encoded_url = base64_encode($href);
+                $tracking_url = route('mailTracker_l', ['url' => $encoded_url, 'hash' => $sent_email->hash]);
+                $link->setAttribute('href', $tracking_url);
+                $modified = true;
+
+                // Store the original URL for tracking (only once per unique URL)
+                SentEmailUrlClicked::firstOrCreate([
+                    'sent_email_id' => $sent_email->id,
+                    'url' => $href,
+                ], [
+                    'hash' => Str::random(32),
+                    'clicks' => 0,
+                    'domain' => $this->getCurrentDomain()
+                ]);
+            }
+        }
+
+        if ($modified) {
+            $email->html($dom->saveHTML());
+        }
+    }
+
+    /**
+     * Purge old tracking records
+     */
+    public function purgeOldRecords()
     {
         if (config('mail-tracker.expire-days') > 0) {
-            $emails = SentEmail::where('created_at', '<', \Carbon\Carbon::now()
-                ->subDays(config('mail-tracker.expire-days')))
-                ->select('id')
-                ->get();
-            SentEmailUrlClicked::whereIn('sent_email_id', $emails->pluck('id'))->delete();
-            SentEmail::whereIn('id', $emails->pluck('id'))->delete();
+            $expire_date = now()->subDays(config('mail-tracker.expire-days'));
+            SentEmail::where('created_at', '<', $expire_date)->delete();
         }
+    }
+
+    /**
+     * Legacy method compatibility
+     */
+    public function beforeSendPerformed($event)
+    {
+        // Legacy compatibility - no longer used
+    }
+
+    /**
+     * Legacy method compatibility  
+     */
+    public function sendPerformed($event)
+    {
+        // Legacy compatibility - no longer used
+    }
+
+    /**
+     * Get current domain from request
+     */
+    protected function getCurrentDomain()
+    {
+        if (app()->has('request')) {
+            $request = app('request');
+            $host = $request->getHost();
+            
+            // For multi-tenant setup, extract subdomain
+            if (strpos($host, '.') !== false) {
+                $parts = explode('.', $host);
+                if (count($parts) >= 2) {
+                    // Return the subdomain (e.g., 'demo' from 'demo.lp.test')
+                    return $parts[0];
+                }
+            }
+            
+            return $host;
+        }
+        
+        return null;
     }
 }

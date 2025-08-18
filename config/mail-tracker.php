@@ -71,6 +71,13 @@ return [
     /**
      * Determines whether or not the body of the email is logged in the sent_emails table
      */
-    'log-content' => true
+    'log-content' => true,
+
+    /**
+     * Filter out email client prefetch/preview requests to avoid false click counts
+     * When enabled, requests from Apple Mail, Gmail, Outlook and other email clients
+     * that automatically scan/preview links will not be counted as clicks
+     */
+    'filter-email-client-clicks' => true,
 
 ];
